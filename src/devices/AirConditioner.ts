@@ -18,6 +18,13 @@ export enum FanSpeed {
   HIGH = 6,
 }
 
+export enum ACModeOption {
+  COOL = 0,
+  FAN = 1,
+  DRY = 2,
+  ENERGY_SAVE = 3,
+}
+
 enum OpMode {
   AUTO = 6,
   COOL = 0,
@@ -67,6 +74,7 @@ export default class AirConditioner extends baseDevice {
 
     this.createHeaterCoolerService();
     this.service.addOptionalCharacteristic(this.platform.customCharacteristics.TotalConsumption);
+    this.service.addOptionalCharacteristic(this.platform.customCharacteristics.ACMode);
 
     if (this.config?.ac_air_quality as boolean && this.Status.airQuality) {
       this.createAirQualityService();
@@ -178,7 +186,7 @@ export default class AirConditioner extends baseDevice {
     return Object.assign({}, {
       ac_swing_mode: 'BOTH',
       ac_air_quality: false,
-      ac_mode: 'BOTH',
+      ac_mode: 'COOLING',
       ac_temperature_sensor: false,
       ac_humidity_sensor: false,
       ac_led_control: false,
@@ -187,7 +195,7 @@ export default class AirConditioner extends baseDevice {
       ac_temperature_unit: 'C',
       ac_buttons: [],
       ac_air_clean: true,
-      ac_energy_save: true,
+      ac_energy_save: false,
     }, super.config);
   }
 
@@ -287,21 +295,9 @@ export default class AirConditioner extends baseDevice {
 
     if (!this.Status.isPowerOn) {
       this.service.updateCharacteristic(Characteristic.CurrentHeaterCoolerState, Characteristic.CurrentHeaterCoolerState.INACTIVE);
-    } else if ([OpMode.COOL].includes(this.Status.opMode)) {
+    } else if ([OpMode.COOL, OpMode.FAN, OpMode.DRY].includes(this.Status.opMode)) {
       this.service.updateCharacteristic(Characteristic.CurrentHeaterCoolerState, Characteristic.CurrentHeaterCoolerState.COOLING);
       this.service.updateCharacteristic(Characteristic.TargetHeaterCoolerState, Characteristic.TargetHeaterCoolerState.COOL);
-    } else if ([OpMode.HEAT].includes(this.Status.opMode)) {
-      this.service.updateCharacteristic(Characteristic.CurrentHeaterCoolerState, Characteristic.CurrentHeaterCoolerState.HEATING);
-      this.service.updateCharacteristic(Characteristic.TargetHeaterCoolerState, Characteristic.TargetHeaterCoolerState.HEAT);
-    } else if ([OpMode.AUTO, -1].includes(this.Status.opMode)) {
-      // auto mode, detect based on current & target temperature
-      if (this.Status.currentTemperature < this.Status.targetTemperature) {
-        this.service.updateCharacteristic(Characteristic.CurrentHeaterCoolerState, Characteristic.CurrentHeaterCoolerState.HEATING);
-        this.service.updateCharacteristic(Characteristic.TargetHeaterCoolerState, Characteristic.TargetHeaterCoolerState.HEAT);
-      } else {
-        this.service.updateCharacteristic(Characteristic.CurrentHeaterCoolerState, Characteristic.CurrentHeaterCoolerState.COOLING);
-        this.service.updateCharacteristic(Characteristic.TargetHeaterCoolerState, Characteristic.TargetHeaterCoolerState.COOL);
-      }
     } else {
       // another mode
     }
@@ -321,6 +317,19 @@ export default class AirConditioner extends baseDevice {
     this.service.updateCharacteristic(Characteristic.SwingMode, this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED);
 
     this.service.updateCharacteristic(this.platform.customCharacteristics.TotalConsumption, this.Status.currentConsumption);
+    this.service.updateCharacteristic(this.platform.customCharacteristics.ACMode, (() => {
+      if (this.Status.opMode === OpMode.COOL && this.Status.isEnergySaveOn) {
+        return ACModeOption.ENERGY_SAVE;
+      }
+      switch (this.Status.opMode) {
+        case OpMode.FAN:
+          return ACModeOption.FAN;
+        case OpMode.DRY:
+          return ACModeOption.DRY;
+        default:
+          return ACModeOption.COOL;
+      }
+    })());
 
     // air quality
     if (this.config?.ac_air_quality as boolean && this.serviceAirQuality && this.Status.airQuality && this.Status.airQuality.isOn) {
@@ -400,21 +409,8 @@ export default class AirConditioner extends baseDevice {
       },
     } = this.platform;
   
-    // Map HomeKit states to LG opModes
-    let opMode;
-    switch (value) {
-      case TargetHeaterCoolerState.AUTO:
-        opMode = OpMode.AUTO; // LG’s AUTO mode = 6
-        break;
-      case TargetHeaterCoolerState.HEAT:
-        opMode = OpMode.HEAT; // LG’s HEAT mode = 4
-        break;
-      case TargetHeaterCoolerState.COOL:
-        opMode = OpMode.COOL; // LG’s COOL mode = 0
-        break;
-      default:
-        opMode = this.Status.opMode; // Keep current mode
-    }
+    // Only cooling state is supported
+    const opMode = OpMode.COOL;
   
     if (opMode !== this.Status.opMode) {
       await this.setOpMode(opMode);
@@ -528,6 +524,46 @@ export default class AirConditioner extends baseDevice {
     });
   }
 
+  async setACMode(value: CharacteristicValue) {
+    if (!this.Status.isPowerOn) {
+      return;
+    }
+    const device: Device = this.accessory.context.device;
+
+    let opMode = OpMode.COOL;
+    let energySave = false;
+    switch (value as number) {
+      case ACModeOption.FAN:
+        opMode = OpMode.FAN;
+        break;
+      case ACModeOption.DRY:
+        opMode = OpMode.DRY;
+        break;
+      case ACModeOption.ENERGY_SAVE:
+        energySave = true;
+        opMode = OpMode.COOL;
+        break;
+      default:
+        opMode = OpMode.COOL;
+    }
+
+    if (opMode !== this.Status.opMode) {
+      await this.setOpMode(opMode);
+    }
+
+    if (this.energySaveModeModels.includes(device.model)) {
+      const desired = energySave ? 1 : 0;
+      if ((this.Status.isEnergySaveOn ? 1 : 0) !== desired) {
+        await this.platform.ThinQ?.deviceControl(device.id, {
+          dataKey: 'airState.powerSave.basic',
+          dataValue: desired,
+        }).then(() => {
+          device.data.snapshot['airState.powerSave.basic'] = desired;
+        });
+      }
+    }
+  }
+
   protected isJetModeEnabled(device: Device) {
     return this.jetModeModels.includes(device.model); // cool mode only
   }
@@ -616,36 +652,33 @@ export default class AirConditioner extends baseDevice {
     this.service.getCharacteristic(Characteristic.CurrentHeaterCoolerState)
       .updateValue(Characteristic.CurrentHeaterCoolerState.INACTIVE);
 
-if (this.config.ac_mode === 'BOTH') {
-  this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
-    .setProps({
-      validValues: [
-        Characteristic.TargetHeaterCoolerState.AUTO,
-        Characteristic.TargetHeaterCoolerState.COOL,
-        Characteristic.TargetHeaterCoolerState.HEAT,
-      ],
-    })
-    .updateValue(Characteristic.TargetHeaterCoolerState.COOL);
-} else if (this.config.ac_mode === 'COOLING') {
-  this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
-    .setProps({
-      validValues: [
-        Characteristic.TargetHeaterCoolerState.COOL,
-      ],
-    })
-    .updateValue(Characteristic.TargetHeaterCoolerState.COOL);
-} else if (this.config.ac_mode === 'HEATING') {
-  this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
-    .setProps({
-      validValues: [
-        Characteristic.TargetHeaterCoolerState.HEAT,
-      ],
-    })
-    .updateValue(Characteristic.TargetHeaterCoolerState.HEAT);
-}
+    // expose only cooling state for a more native feel
+    this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
+      .setProps({
+        validValues: [Characteristic.TargetHeaterCoolerState.COOL],
+      })
+      .updateValue(Characteristic.TargetHeaterCoolerState.COOL);
 
     this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
       .onSet(this.setTargetState.bind(this));
+
+    // custom AC mode characteristic to switch between cool, fan, dry and energy saver
+    this.service.getCharacteristic(this.platform.customCharacteristics.ACMode)
+      .onSet(this.setACMode.bind(this))
+      .onGet(() => {
+        if (this.Status.opMode === OpMode.COOL && this.Status.isEnergySaveOn) {
+          return ACModeOption.ENERGY_SAVE;
+        }
+        switch (this.Status.opMode) {
+          case OpMode.FAN:
+            return ACModeOption.FAN;
+          case OpMode.DRY:
+            return ACModeOption.DRY;
+          default:
+            return ACModeOption.COOL;
+        }
+      })
+      .updateValue(ACModeOption.COOL);
 
     if (this.Status.currentTemperature) {
       this.service.updateCharacteristic(Characteristic.CurrentTemperature, this.Status.currentTemperature);
@@ -926,6 +959,10 @@ export class ACStatus {
 
   public get isLightOn() {
     return !!this.data['airState.lightingState.displayControl'];
+  }
+
+  public get isEnergySaveOn() {
+    return !!this.data['airState.powerSave.basic'];
   }
 
   public get currentConsumption() {
