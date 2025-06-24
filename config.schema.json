@@ -154,7 +154,8 @@
                   "HEATING"
                 ]
               }
-            ]
+            ],
+            "default": "COOLING"
           },
           "ac_swing_mode": {
             "title": "Swing Mode (vertical or horizontal)",
@@ -218,7 +219,7 @@
           "ac_energy_save": {
             "title": "Energy save as switch",
             "type": "boolean",
-            "default": true
+            "default": false
           },
           "ac_air_clean": {
             "title": "Air purify as switch",
