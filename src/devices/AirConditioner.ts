@@ -18,6 +18,10 @@ export enum FanSpeed {
   HIGH = 6,
 }
 
+// Maximum supported fan speed level for AC units. Some models only provide
+// three physical fan speed steps even though the API exposes more values.
+const MAX_FAN_SPEED = 3;
+
 export enum ACModeOption {
   COOL = 0,
   FAN = 1,
@@ -49,7 +53,6 @@ export default class AirConditioner extends baseDevice {
   protected serviceAirClean;
   protected jetModeModels = ['RAC_056905'];
   protected quietModeModels = ['WINF_056905'];
-  protected energySaveModeModels = ['WINF_056905', 'RAC_056905'];
   protected airCleanModels = ['RAC_056905'];
   protected currentTargetState = 2; // default target: COOL
 
@@ -139,7 +142,7 @@ export default class AirConditioner extends baseDevice {
     }
 
     this.serviceEnergySaveMode = accessory.getService('Energy save');
-    if (this.energySaveModeModels.includes(device.model) && this.config.ac_energy_save as boolean) {
+    if (this.isEnergySaveSupported(device) && this.config.ac_energy_save as boolean) {
       if (!this.serviceEnergySaveMode) {
         this.serviceEnergySaveMode = accessory.addService(Switch, 'Energy save', 'Energy save');
       }
@@ -206,7 +209,7 @@ export default class AirConditioner extends baseDevice {
   async setEnergySaveActive(value: CharacteristicValue) {
     const device: Device = this.accessory.context.device;
 
-    if (this.Status.isPowerOn && this.Status.opMode === 0) {
+    if (this.isEnergySaveSupported(device) && this.Status.isPowerOn && this.Status.opMode === 0) {
       this.platform.ThinQ?.deviceControl(device.id, {
         dataKey: 'airState.powerSave.basic',
         dataValue: value ? 1 : 0,
@@ -327,7 +330,7 @@ export default class AirConditioner extends baseDevice {
       }
     }
 
-    this.service.updateCharacteristic(Characteristic.RotationSpeed, this.Status.windStrength);
+    this.service.updateCharacteristic(Characteristic.RotationSpeed, Math.min(this.Status.windStrength, MAX_FAN_SPEED));
     // eslint-disable-next-line max-len
     this.service.updateCharacteristic(Characteristic.SwingMode, this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED);
 
@@ -373,7 +376,7 @@ export default class AirConditioner extends baseDevice {
     // handle fan service
     if (this.config?.ac_fan_control as boolean && this.serviceFanV2) {
       this.serviceFanV2.updateCharacteristic(Characteristic.Active, this.Status.isPowerOn ? Active.ACTIVE : Active.INACTIVE);
-      this.serviceFanV2.updateCharacteristic(Characteristic.RotationSpeed, this.Status.windStrength);
+      this.serviceFanV2.updateCharacteristic(Characteristic.RotationSpeed, Math.min(this.Status.windStrength, MAX_FAN_SPEED));
       // eslint-disable-next-line max-len
       this.serviceFanV2.updateCharacteristic(Characteristic.SwingMode, this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED);
     }
@@ -391,7 +394,7 @@ export default class AirConditioner extends baseDevice {
       this.serviceQuietMode.updateCharacteristic(Characteristic.On, !!device.snapshot['airState.miscFuncState.silentAWHP']);
     }
 
-    if (this.energySaveModeModels.includes(device.model) && this.config.ac_energy_save as boolean) {
+    if (this.isEnergySaveSupported(device) && this.config.ac_energy_save as boolean) {
       this.serviceEnergySaveMode.updateCharacteristic(Characteristic.On, !!device.snapshot['airState.powerSave.basic']);
     }
 
@@ -482,7 +485,7 @@ export default class AirConditioner extends baseDevice {
       return;
     }
 
-    const speedValue = Math.max(1, Math.round(value as number));
+    const speedValue = Math.min(MAX_FAN_SPEED, Math.max(1, Math.round(value as number)));
 
     this.platform.log.info('Set fan speed = ', speedValue);
     const device: Device = this.accessory.context.device;
@@ -490,6 +493,9 @@ export default class AirConditioner extends baseDevice {
     this.platform.ThinQ?.deviceControl(device.id, {
       dataKey: 'airState.windStrength',
       dataValue: windStrength,
+    }).then(() => {
+      device.data.snapshot['airState.windStrength'] = windStrength;
+      this.updateAccessoryCharacteristic(device);
     });
   }
 
@@ -570,7 +576,7 @@ export default class AirConditioner extends baseDevice {
       await this.setOpMode(opMode);
     }
 
-    if (this.energySaveModeModels.includes(device.model)) {
+    if (this.isEnergySaveSupported(device)) {
       const desired = energySave ? 1 : 0;
       if ((this.Status.isEnergySaveOn ? 1 : 0) !== desired) {
         await this.platform.ThinQ?.deviceControl(device.id, {
@@ -585,6 +591,10 @@ export default class AirConditioner extends baseDevice {
 
   protected isJetModeEnabled(device: Device) {
     return this.jetModeModels.includes(device.model); // cool mode only
+  }
+
+  protected isEnergySaveSupported(device: Device) {
+    return Object.prototype.hasOwnProperty.call(device.snapshot, 'airState.powerSave.basic');
   }
 
   protected createFanService() {
@@ -615,7 +625,7 @@ export default class AirConditioner extends baseDevice {
         setTimeout(() => {
           // eslint-disable-next-line max-len
           this.serviceFanV2.updateCharacteristic(Characteristic.Active, this.Status.isPowerOn ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE);
-          this.serviceFanV2.updateCharacteristic(Characteristic.RotationSpeed, this.Status.windStrength);
+          this.serviceFanV2.updateCharacteristic(Characteristic.RotationSpeed, Math.min(this.Status.windStrength, MAX_FAN_SPEED));
         }, 100);
       })
       .updateValue(Characteristic.Active.INACTIVE);
@@ -632,11 +642,11 @@ export default class AirConditioner extends baseDevice {
       .onSet(this.setFanState.bind(this));
     this.serviceFanV2.getCharacteristic(Characteristic.RotationSpeed)
       .setProps({
-        minValue: 0,
-        maxValue: Object.keys(FanSpeed).length / 2,
+        minValue: 1,
+        maxValue: MAX_FAN_SPEED,
         minStep: 0.1,
       })
-      .updateValue(this.Status.windStrength)
+      .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
       .onSet(this.setFanSpeed.bind(this));
     this.serviceFanV2.getCharacteristic(Characteristic.SwingMode)
       .onSet(this.setSwingMode.bind(this))
@@ -801,10 +811,11 @@ export default class AirConditioner extends baseDevice {
 
     this.service.getCharacteristic(Characteristic.RotationSpeed)
       .setProps({
-        minValue: 0,
-        maxValue: Object.keys(FanSpeed).length / 2,
+        minValue: 1,
+        maxValue: MAX_FAN_SPEED,
         minStep: 0.1,
       })
+      .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
       .onSet(this.setFanSpeed.bind(this));
     this.service.getCharacteristic(Characteristic.SwingMode)
       .onSet(this.setSwingMode.bind(this));
@@ -971,7 +982,10 @@ export class ACStatus {
   // fan service
   public get windStrength() {
     const index = Object.keys(FanSpeed).indexOf(parseInt(this.data['airState.windStrength']).toString());
-    return index !== -1 ? index + 1 : Object.keys(FanSpeed).length / 2;
+    if (index === -1) {
+      return 1;
+    }
+    return Math.min(index + 1, MAX_FAN_SPEED);
   }
 
   public get isSwingOn() {
