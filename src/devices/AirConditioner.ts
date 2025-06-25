@@ -169,6 +169,7 @@ export default class AirConditioner extends baseDevice {
       this.serviceAirClean = null;
     }
 
+
     this.setupButton(device);
 
     // send request every minute to update temperature
@@ -268,9 +269,7 @@ export default class AirConditioner extends baseDevice {
     }
 
     const device: Device = this.accessory.context.device;
-    const { TargetFanState } = this.platform.Characteristic;
-
-    const windStrength = value === TargetFanState.AUTO ? 8 : FanSpeed.HIGH; // 8 mean fan auto mode
+    const windStrength = FanSpeed.HIGH;
     return this.platform.ThinQ?.deviceControl(device.id, {
       dataKey: 'airState.windStrength',
       dataValue: windStrength,
@@ -315,8 +314,6 @@ export default class AirConditioner extends baseDevice {
     let targetState = Characteristic.TargetHeaterCoolerState.COOL;
     if (this.Status.opMode === OpMode.FAN) {
       targetState = Characteristic.TargetHeaterCoolerState.HEAT;
-    } else if (this.Status.opMode === OpMode.COOL && this.Status.isEnergySaveOn) {
-      targetState = Characteristic.TargetHeaterCoolerState.AUTO;
     }
     this.service.updateCharacteristic(Characteristic.TargetHeaterCoolerState, targetState);
 
@@ -401,6 +398,7 @@ export default class AirConditioner extends baseDevice {
     if (this.airCleanModels.includes(device.model) && this.config.ac_air_clean as boolean) {
       this.serviceAirClean.updateCharacteristic(Characteristic.On, !!device.snapshot['airState.wMode.airClean']);
     }
+
   }
 
   async setLight(value: CharacteristicValue) {
@@ -428,9 +426,6 @@ export default class AirConditioner extends baseDevice {
     } = this.platform;
   
     switch (value as number) {
-      case TargetHeaterCoolerState.AUTO:
-        await this.setACMode(ACModeOption.ENERGY_SAVE);
-        break;
       case TargetHeaterCoolerState.HEAT:
         await this.setACMode(ACModeOption.FAN);
         break;
@@ -644,7 +639,7 @@ export default class AirConditioner extends baseDevice {
       .setProps({
         minValue: 1,
         maxValue: MAX_FAN_SPEED,
-        minStep: 0.1,
+        minStep: 1,
       })
       .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
       .onSet(this.setFanSpeed.bind(this));
@@ -685,7 +680,6 @@ export default class AirConditioner extends baseDevice {
     this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
       .setProps({
         validValues: [
-          Characteristic.TargetHeaterCoolerState.AUTO,
           Characteristic.TargetHeaterCoolerState.HEAT,
           Characteristic.TargetHeaterCoolerState.COOL,
         ],
@@ -813,7 +807,7 @@ export default class AirConditioner extends baseDevice {
       .setProps({
         minValue: 1,
         maxValue: MAX_FAN_SPEED,
-        minStep: 0.1,
+        minStep: 1,
       })
       .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
       .onSet(this.setFanSpeed.bind(this));
