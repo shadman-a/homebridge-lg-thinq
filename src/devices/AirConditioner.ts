@@ -22,6 +22,13 @@ export enum FanSpeed {
 // three physical fan speed steps even though the API exposes more values.
 const MAX_FAN_SPEED = 3;
 
+// Map 1-3 user speed levels to LG's enumerated wind strength values
+const FAN_SPEED_MAP: number[] = [
+  FanSpeed.LOW,
+  FanSpeed.MEDIUM,
+  FanSpeed.HIGH,
+];
+
 export enum ACModeOption {
   COOL = 0,
   FAN = 1,
@@ -45,6 +52,7 @@ export default class AirConditioner extends baseDevice {
   protected serviceHumiditySensor;
   protected serviceLight;
   protected serviceFanV2;
+  protected hasFanSpeed = false; // check if HomeKit FanSpeed char is available
 
   // more feature
   protected serviceJetMode; // jet mode
@@ -73,7 +81,10 @@ export default class AirConditioner extends baseDevice {
         Switch,
         Lightbulb,
       },
+      Characteristic,
     } = this.platform;
+
+    this.hasFanSpeed = !!(Characteristic as any).FanSpeed;
 
     this.createHeaterCoolerService();
     this.service.addOptionalCharacteristic(this.platform.customCharacteristics.TotalConsumption);
@@ -327,7 +338,17 @@ export default class AirConditioner extends baseDevice {
       }
     }
 
-    this.service.updateCharacteristic(Characteristic.RotationSpeed, Math.min(this.Status.windStrength, MAX_FAN_SPEED));
+    if (this.hasFanSpeed) {
+      this.service.updateCharacteristic(
+        (Characteristic as any).FanSpeed,
+        Math.min(this.Status.windStrength, MAX_FAN_SPEED) - 1,
+      );
+    } else {
+      this.service.updateCharacteristic(
+        Characteristic.RotationSpeed,
+        Math.min(this.Status.windStrength, MAX_FAN_SPEED),
+      );
+    }
     // eslint-disable-next-line max-len
     this.service.updateCharacteristic(Characteristic.SwingMode, this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED);
 
@@ -372,10 +393,26 @@ export default class AirConditioner extends baseDevice {
 
     // handle fan service
     if (this.config?.ac_fan_control as boolean && this.serviceFanV2) {
-      this.serviceFanV2.updateCharacteristic(Characteristic.Active, this.Status.isPowerOn ? Active.ACTIVE : Active.INACTIVE);
-      this.serviceFanV2.updateCharacteristic(Characteristic.RotationSpeed, Math.min(this.Status.windStrength, MAX_FAN_SPEED));
+      this.serviceFanV2.updateCharacteristic(
+        Characteristic.Active,
+        this.Status.isPowerOn ? Active.ACTIVE : Active.INACTIVE,
+      );
+      if (this.hasFanSpeed) {
+        this.serviceFanV2.updateCharacteristic(
+          (Characteristic as any).FanSpeed,
+          Math.min(this.Status.windStrength, MAX_FAN_SPEED) - 1,
+        );
+      } else {
+        this.serviceFanV2.updateCharacteristic(
+          Characteristic.RotationSpeed,
+          Math.min(this.Status.windStrength, MAX_FAN_SPEED),
+        );
+      }
       // eslint-disable-next-line max-len
-      this.serviceFanV2.updateCharacteristic(Characteristic.SwingMode, this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED);
+      this.serviceFanV2.updateCharacteristic(
+        Characteristic.SwingMode,
+        this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED,
+      );
     }
 
     if (this.config.ac_led_control as boolean && this.serviceLight) {
@@ -480,11 +517,16 @@ export default class AirConditioner extends baseDevice {
       return;
     }
 
-    const speedValue = Math.min(MAX_FAN_SPEED, Math.max(1, Math.round(value as number)));
+    let speedValue = Math.round(value as number);
+    if (this.hasFanSpeed) {
+      // FanSpeed characteristic uses 0-based values
+      speedValue += 1;
+    }
+    speedValue = Math.min(MAX_FAN_SPEED, Math.max(1, speedValue));
 
     this.platform.log.info('Set fan speed = ', speedValue);
     const device: Device = this.accessory.context.device;
-    const windStrength = parseInt(Object.keys(FanSpeed)[speedValue - 1]) || FanSpeed.HIGH;
+    const windStrength = FAN_SPEED_MAP[speedValue - 1] || FanSpeed.HIGH;
     this.platform.ThinQ?.deviceControl(device.id, {
       dataKey: 'airState.windStrength',
       dataValue: windStrength,
@@ -606,6 +648,11 @@ export default class AirConditioner extends baseDevice {
     this.serviceFanV2 = this.accessory.getService(Fanv2) || this.accessory.addService(Fanv2);
     this.serviceFanV2.addLinkedService(this.service);
 
+    // Check if HomeKit provides FanSpeed characteristic (iOS 17+)
+    if ((Characteristic as any).FanSpeed) {
+      this.hasFanSpeed = true;
+    }
+
     this.serviceFanV2.getCharacteristic(Characteristic.Active)
       .onGet(() => {
         return this.Status.isPowerOn ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE;
@@ -618,9 +665,21 @@ export default class AirConditioner extends baseDevice {
 
         // do not allow change status via home app, revert to prev status in 0.1s
         setTimeout(() => {
-          // eslint-disable-next-line max-len
-          this.serviceFanV2.updateCharacteristic(Characteristic.Active, this.Status.isPowerOn ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE);
-          this.serviceFanV2.updateCharacteristic(Characteristic.RotationSpeed, Math.min(this.Status.windStrength, MAX_FAN_SPEED));
+          this.serviceFanV2.updateCharacteristic(
+            Characteristic.Active,
+            this.Status.isPowerOn ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE,
+          );
+          if (this.hasFanSpeed) {
+            this.serviceFanV2.updateCharacteristic(
+              (Characteristic as any).FanSpeed,
+              Math.min(this.Status.windStrength, MAX_FAN_SPEED) - 1,
+            );
+          } else {
+            this.serviceFanV2.updateCharacteristic(
+              Characteristic.RotationSpeed,
+              Math.min(this.Status.windStrength, MAX_FAN_SPEED),
+            );
+          }
         }, 100);
       })
       .updateValue(Characteristic.Active.INACTIVE);
@@ -635,14 +694,25 @@ export default class AirConditioner extends baseDevice {
       .updateValue(Characteristic.CurrentFanState.INACTIVE);
     this.serviceFanV2.getCharacteristic(Characteristic.TargetFanState)
       .onSet(this.setFanState.bind(this));
-    this.serviceFanV2.getCharacteristic(Characteristic.RotationSpeed)
-      .setProps({
-        minValue: 1,
-        maxValue: MAX_FAN_SPEED,
-        minStep: 1,
-      })
-      .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
-      .onSet(this.setFanSpeed.bind(this));
+    if (this.hasFanSpeed) {
+      // Use HomeKit preset speeds Low/Medium/High
+      this.serviceFanV2.getCharacteristic((Characteristic as any).FanSpeed)
+        .setProps({
+          validValues: [0, 1, 2],
+        })
+        .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED) - 1)
+        .onSet(this.setFanSpeed.bind(this));
+    } else {
+      // Fall back to numeric rotation speed
+      this.serviceFanV2.getCharacteristic(Characteristic.RotationSpeed)
+        .setProps({
+          minValue: 1,
+          maxValue: MAX_FAN_SPEED,
+          minStep: 1,
+        })
+        .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
+        .onSet(this.setFanSpeed.bind(this));
+    }
     this.serviceFanV2.getCharacteristic(Characteristic.SwingMode)
       .onSet(this.setSwingMode.bind(this))
       .updateValue(this.Status.isSwingOn ? Characteristic.SwingMode.SWING_ENABLED : Characteristic.SwingMode.SWING_DISABLED);
@@ -803,14 +873,21 @@ export default class AirConditioner extends baseDevice {
     this.service.getCharacteristic(Characteristic.HeatingThresholdTemperature)
       .onSet(this.setTargetTemperature.bind(this));
 
-    this.service.getCharacteristic(Characteristic.RotationSpeed)
-      .setProps({
-        minValue: 1,
-        maxValue: MAX_FAN_SPEED,
-        minStep: 1,
-      })
-      .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
-      .onSet(this.setFanSpeed.bind(this));
+    if (this.hasFanSpeed) {
+      this.service.getCharacteristic((Characteristic as any).FanSpeed)
+        .setProps({ validValues: [0, 1, 2] })
+        .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED) - 1)
+        .onSet(this.setFanSpeed.bind(this));
+    } else {
+      this.service.getCharacteristic(Characteristic.RotationSpeed)
+        .setProps({
+          minValue: 1,
+          maxValue: MAX_FAN_SPEED,
+          minStep: 1,
+        })
+        .updateValue(Math.min(this.Status.windStrength, MAX_FAN_SPEED))
+        .onSet(this.setFanSpeed.bind(this));
+    }
     this.service.getCharacteristic(Characteristic.SwingMode)
       .onSet(this.setSwingMode.bind(this));
   }
@@ -975,11 +1052,14 @@ export class ACStatus {
 
   // fan service
   public get windStrength() {
-    const index = Object.keys(FanSpeed).indexOf(parseInt(this.data['airState.windStrength']).toString());
-    if (index === -1) {
-      return 1;
+    const value = parseInt(this.data['airState.windStrength']);
+    if (value >= FanSpeed.HIGH) {
+      return 3;
     }
-    return Math.min(index + 1, MAX_FAN_SPEED);
+    if (value >= FanSpeed.MEDIUM) {
+      return 2;
+    }
+    return 1;
   }
 
   public get isSwingOn() {
