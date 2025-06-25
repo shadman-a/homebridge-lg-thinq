@@ -93,8 +93,18 @@ for more device support please open issue request.
 
 ## Support
 
-If you have a question, please [start a discussion](https://github.com/nVuln/homebridge-lg-thinq/discussions/new) or leave a message at [discord channel](https://discord.gg/wEfQpCDtS7).  
+If you have a question, please [start a discussion](https://github.com/nVuln/homebridge-lg-thinq/discussions/new) or leave a message at [discord channel](https://discord.gg/wEfQpCDtS7).
 If you would like to report a bug, please [open an issue](https://github.com/nVuln/homebridge-lg-thinq/issues/new/choose).
+
+## Accessory Settings in the Home App
+
+HomeKit does not allow plugins to expose custom settings in the gear icon of an accessory.
+Any plugin-specific configuration must be set in Homebridge (for example via
+Homebridge Config UI X). When a plugin needs user-adjustable options in the Home
+app, the typical workaround is to expose those options as extra switches or
+custom characteristics on the accessory. This plugin does not currently create
+additional services for configuration, so options like device IDs or polling
+intervals still need to be managed from the Homebridge UI.
 
 ## CLI Usage
 
