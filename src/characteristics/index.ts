@@ -3,8 +3,8 @@ import type {
   WithUUID,
 } from 'homebridge';
 
-import TotalConsumption from './TotalConsumption';
-import ACMode from './ACMode';
+import TotalConsumption from './TotalConsumption.js';
+import ACMode from './ACMode.js';
 
 export default function characteristic(
   Characteristic: typeof CharacteristicType,

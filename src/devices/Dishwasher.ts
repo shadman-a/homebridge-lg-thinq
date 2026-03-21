@@ -1,10 +1,11 @@
-import {baseDevice} from '../baseDevice';
-import {LGThinQHomebridgePlatform} from '../platform';
-import {PlatformAccessory} from 'homebridge';
-import {Device} from '../lib/Device';
-import {WasherDryerStatus} from './WasherDryer';
+import { AccessoryContext, BaseDevice } from '../baseDevice.js';
+import { LGThinQHomebridgePlatform } from '../platform.js';
+import { Logger, PlatformAccessory, Service } from 'homebridge';
+import { Device } from '../lib/Device.js';
+import { normalizeNumber } from '../helper.js';
+import { WasherDryerStatus } from './WasherDryer.js';
 
-export default class Dishwasher extends baseDevice {
+export default class Dishwasher extends BaseDevice {
   public isRunning = false;
   public inputID = 1;
   public rinseLevel = 'LEVEL_2';
@@ -28,7 +29,7 @@ export default class Dishwasher extends baseDevice {
 
   protected serviceDishwasher;
   protected serviceDoorOpened;
-  protected serviceEventFinished;
+  protected serviceEventFinished: Service | undefined;
   protected tvService;
   protected dishwasherState;
   protected dishwasherOptions;
@@ -38,7 +39,7 @@ export default class Dishwasher extends baseDevice {
   protected dishwasherRinseLevel;
   protected dishwasherClaenness;
 
-  createInputSourceService(name, subtype, identifier, configuredName, isShow) {
+  createInputSourceService(name: string, subtype: string, identifier: number, configuredName: string, isShow: boolean) {
     return this.accessory.getService(name) ||
       this.accessory.addService(this.platform.Service.InputSource, name, subtype)
         .setCharacteristic(this.platform.Characteristic.Identifier, identifier)
@@ -55,9 +56,10 @@ export default class Dishwasher extends baseDevice {
 
   constructor(
     public readonly platform: LGThinQHomebridgePlatform,
-    public readonly accessory: PlatformAccessory,
+    public readonly accessory: PlatformAccessory<AccessoryContext>,
+    logger: Logger,
   ) {
-    super(platform, accessory);
+    super(platform, accessory, logger);
 
     const {
       Service: {
@@ -87,11 +89,16 @@ export default class Dishwasher extends baseDevice {
     this.tvService
       .getCharacteristic(this.platform.Characteristic.ActiveIdentifier)
       .on('set', (inputIdentifier, callback) => {
-
-        if (inputIdentifier > 7 || inputIdentifier < 1) {
+        const vNum = normalizeNumber(inputIdentifier);
+        if (vNum === null) {
+          this.platform.log.error('Dishwasher ActiveIdentifier is not a number');
+          callback();
+          return;
+        }
+        if (vNum > 7 || vNum < 1) {
           this.inputID = 1;
         } else {
-          this.inputID = inputIdentifier;
+          this.inputID = vNum;
         }
         callback();
       })
@@ -200,7 +207,7 @@ export default class Dishwasher extends baseDevice {
     this.serviceEventFinished = accessory.getService(OccupancySensor);
     if (this.config.dishwasher_trigger as boolean) {
       this.serviceEventFinished = this.serviceEventFinished || accessory.addService(OccupancySensor, device.name + ' - Program Finished');
-      // eslint-disable-next-line max-len
+
       this.serviceEventFinished.updateCharacteristic(Characteristic.OccupancyDetected, Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED);
     } else if (this.serviceEventFinished) {
       accessory.removeService(this.serviceEventFinished);
@@ -316,7 +323,7 @@ export default class Dishwasher extends baseDevice {
 
         }
         this.inputName = 'Finished Cycle ' + this.finishedTime;
-        if (this.Status.data.extraDry.includes('ON') && this.dryCounter > 3 && this.Status.remainDuration == 3600) {
+        if (this.Status.data.extraDry.includes('ON') && this.dryCounter > 3 && this.Status.remainDuration === 3600) {
           this.inputName += ' (Waiting For Extra Dry Step)';
         }
       } else if (this.Status.data.state.includes('FAIL')) {
@@ -345,7 +352,7 @@ export default class Dishwasher extends baseDevice {
         this.inputName += ' (Door Open)';
         this.resetTimeSettings();
       }
-      if (this.Status.data.state == this.Status.data.process && this.Status.data.process.includes('RUNNING')) {
+      if (this.Status.data.state === this.Status.data.process && this.Status.data.process.includes('RUNNING')) {
         this.inputName += '. Step: Cleaning';
       }
       if (this.Status.data.state !== this.Status.data.process && !this.Status.data.process.includes('NONE') && !this.Status.data.state.includes('END')) {
@@ -447,8 +454,12 @@ export default class Dishwasher extends baseDevice {
     if (this.dishwasherOptions.getCharacteristic(this.platform.Characteristic.ConfiguredName).value !== this.inputNameOptions) {
       this.dishwasherOptions.updateCharacteristic(this.platform.Characteristic.ConfiguredName, this.inputNameOptions);
     }
-    this.dishwasherOptions.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.onStatus() ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.dishwasherOptions.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.onStatus() ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.dishwasherOptions.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.onStatus() ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.dishwasherOptions.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.onStatus() ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
   }
 
   timeDurationEnd() {
@@ -465,7 +476,7 @@ export default class Dishwasher extends baseDevice {
     if (this.Status.remainDuration > 3600) {
       hourMinutes = 'Hours';
     }
-    if (this.Status.remainDuration == 3600) {
+    if (this.Status.remainDuration === 3600) {
       hourMinutes = 'Hour';
 
     }
@@ -517,12 +528,24 @@ export default class Dishwasher extends baseDevice {
     if (this.endTime.getCharacteristic(this.platform.Characteristic.ConfiguredName).value !== this.courseTimeEndString) {
       this.endTime.updateCharacteristic(this.platform.Characteristic.ConfiguredName, this.courseTimeEndString);
     }
-    this.startTime.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.startTime.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
-    this.courseDuration.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.courseDuration.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
-    this.endTime.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.endTime.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.startTime.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.startTime.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.courseDuration.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.courseDuration.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.endTime.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.endTime.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
   }
 
   setActive() {
@@ -541,7 +564,7 @@ export default class Dishwasher extends baseDevice {
     super.updateAccessoryCharacteristic(device);
     const { Characteristic } = this.platform;
     if (this.Status.remainDuration !== this.serviceDishwasher.getCharacteristic(Characteristic.RemainingDuration).value) {
-      if (this.Status.data.extraDry.includes('ON') && this.Status.remainDuration == 3600) {
+      if (this.Status.data.extraDry.includes('ON') && this.Status.remainDuration === 3600) {
         this.dryCounter += 1;
       }
       if (this.dryCounter <= 3) {
@@ -589,7 +612,7 @@ export default class Dishwasher extends baseDevice {
     }, super.config);
   }
 
-  nameLengthCheck(newName) {
+  nameLengthCheck(newName: string) {
     if (newName.length >= 64) {
       newName = newName.slice(0, 60) + '...';
     }
@@ -602,15 +625,15 @@ export default class Dishwasher extends baseDevice {
     }
     let rinseLevelPercent = 100;
     let rinseLevelStatus = 0;
-    if (this.rinseLevel == 'LEVEL_0') {
+    if (this.rinseLevel === 'LEVEL_0') {
       rinseLevelPercent = 0;
       rinseLevelStatus = 1;
       this.inputNameRinse = 'Rinse Aid Level is Running Low';
       this.inputID = 3;
-    } else if (this.rinseLevel == 'LEVEL_1') {
+    } else if (this.rinseLevel === 'LEVEL_1') {
       rinseLevelPercent = 50;
       this.inputNameRinse = 'Rinse Aid Level is at 50% Capacity';
-    } else if (this.rinseLevel == 'LEVEL_2') {
+    } else if (this.rinseLevel === 'LEVEL_2') {
       rinseLevelPercent = 100;
       this.inputNameRinse = 'Rinse Aid Level is at 100% Capacity';
     } else {
@@ -627,28 +650,38 @@ export default class Dishwasher extends baseDevice {
       if (this.dishwasherClaenness.getCharacteristic(this.platform.Characteristic.ConfiguredName).value !== this.inputNameMachine) {
         this.dishwasherClaenness.updateCharacteristic(this.platform.Characteristic.ConfiguredName, this.inputNameMachine);
       }
-      this.dishwasherClaenness.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.onStatus() ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-      this.dishwasherClaenness.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.onStatus() ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+      this.dishwasherClaenness.updateCharacteristic(
+        this.platform.Characteristic.TargetVisibilityState,
+        this.onStatus() ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+      this.dishwasherClaenness.updateCharacteristic(
+        this.platform.Characteristic.CurrentVisibilityState,
+        this.onStatus() ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
 
     } else {
       this.inputNameMachine = 'Dishwasher is Clean';
       if (this.dishwasherClaenness.getCharacteristic(this.platform.Characteristic.ConfiguredName).value !== this.inputNameMachine) {
         this.dishwasherClaenness.updateCharacteristic(this.platform.Characteristic.ConfiguredName, this.inputNameMachine);
       }
-      this.dishwasherClaenness.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-      this.dishwasherClaenness.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+      this.dishwasherClaenness.updateCharacteristic(
+        this.platform.Characteristic.TargetVisibilityState, this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+      this.dishwasherClaenness.updateCharacteristic(
+        this.platform.Characteristic.CurrentVisibilityState, this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
     }
     if (this.dishwasherRinseLevel.getCharacteristic(this.platform.Characteristic.ConfiguredName).value !== this.inputNameRinse) {
       this.dishwasherRinseLevel.updateCharacteristic(this.platform.Characteristic.ConfiguredName, this.inputNameRinse);
     }
-    this.dishwasherRinseLevel.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.onStatus() ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.dishwasherRinseLevel.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.onStatus() ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.dishwasherRinseLevel.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.onStatus() ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.dishwasherRinseLevel.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.onStatus() ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
   }
 
   onStatus() {
     const newCurrentTime = new Date();
     const newCurrentTimeMS = newCurrentTime.getTime();
-    if (this.standbyTimetMS != 0) {
+    if (this.standbyTimetMS !== 0) {
       if (newCurrentTimeMS - this.standbyTimetMS > 3600000 / 10) {
         return false;
       } else {
@@ -660,51 +693,51 @@ export default class Dishwasher extends baseDevice {
   }
 
   timerStatus() {
-    if (!this.onStatus || this.Status.remainDuration == 0 || this.Status.data.state.includes('STAND')) {
+    if (!this.onStatus || this.Status.remainDuration === 0 || this.Status.data.state.includes('STAND')) {
       return 0;
     } else {
       return 1;
     }
   }
 
-  getRinseLevel(callback) {
+  getRinseLevel(callback: (error: Error | null, result?: number) => void) {
     if (this.Status.data.state.includes('RUNNING')) {
       this.rinseLevel = this.Status.data.rinseLevel || 'LEVEL_1';
     }
     let rinseStatus = 0;
-    if (this.rinseLevel == 'LEVEL_0') {
+    if (this.rinseLevel === 'LEVEL_0') {
       rinseStatus = 1;
     }
 
     callback(null, rinseStatus);
   }
 
-  getDoorStatus(callback) {
+  getDoorStatus(callback: (error: Error | null, result?: boolean) => void) {
     const currentStatus = this.onStatus();
     callback(null, currentStatus);
   }
 
-  getRinseLevelPercent(callback) {
+  getRinseLevelPercent(callback: (error: Error | null, result: number) => void) {
     let levelPercent = this.rinseLevel;
     if (this.Status.data.state.includes('RUNNING')) {
       levelPercent = this.Status.data.rinseLevel || 'LEVEL_1';
     }
     let rinseLevelPercent = 100;
-    if (levelPercent == 'LEVEL_0') {
+    if (levelPercent === 'LEVEL_0') {
       rinseLevelPercent = 0;
-    } else if (levelPercent == 'LEVEL_1') {
+    } else if (levelPercent === 'LEVEL_1') {
       rinseLevelPercent = 50;
     }
     callback(null, rinseLevelPercent);
   }
 
-  getRinseLevelStatus(callback) {
+  getRinseLevelStatus(callback: (error: Error | null, result: number) => void) {
     let levelStatus = this.rinseLevel;
     if (this.Status.data.state.includes('RUNNING')) {
       levelStatus = this.Status.data.rinseLevel || 'LEVEL_1';
     }
     let rinseLevelStatus = 0;
-    if (levelStatus == 'LEVEL_0') {
+    if (levelStatus === 'LEVEL_0') {
       rinseLevelStatus = 1;
     }
     callback(null, rinseLevelStatus);
@@ -717,15 +750,27 @@ export default class Dishwasher extends baseDevice {
     this.courseStartString = 'Cycle Start Time Not Set';
     this.courseTimeString = 'Cycle Duration Not Set';
     this.courseTimeEndString = 'Cycle End Time Not Set';
-    this.startTime.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.startTime.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
-    this.courseDuration.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.courseDuration.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
-    this.endTime.updateCharacteristic(this.platform.Characteristic.TargetVisibilityState, this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
-    this.endTime.updateCharacteristic(this.platform.Characteristic.CurrentVisibilityState, this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.startTime.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState, 
+      this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.startTime.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.courseDuration.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.courseDuration.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
+    this.endTime.updateCharacteristic(
+      this.platform.Characteristic.TargetVisibilityState,
+      this.showTime ? this.platform.Characteristic.TargetVisibilityState.SHOWN : this.platform.Characteristic.TargetVisibilityState.HIDDEN);
+    this.endTime.updateCharacteristic(
+      this.platform.Characteristic.CurrentVisibilityState,
+      this.showTime ? this.platform.Characteristic.CurrentVisibilityState.SHOWN : this.platform.Characteristic.CurrentVisibilityState.HIDDEN);
   }
 
-  public update(snapshot) {
+  public update(snapshot: any) {
     super.update(snapshot);
 
     const dishwasher = snapshot.dishwasher;
@@ -748,7 +793,7 @@ export default class Dishwasher extends baseDevice {
 
         // turn it off after 10 minute
         setTimeout(() => {
-          this.serviceEventFinished.updateCharacteristic(OccupancyDetected, OccupancyDetected.OCCUPANCY_NOT_DETECTED);
+          this.serviceEventFinished?.updateCharacteristic(OccupancyDetected, OccupancyDetected.OCCUPANCY_NOT_DETECTED);
         }, 10000 * 60);
       }
 
