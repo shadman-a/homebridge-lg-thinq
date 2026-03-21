@@ -91,7 +91,6 @@ export default class AirConditioner extends BaseDevice {
         Lightbulb,
         HeaterCooler,
       },
-      Characteristic,
     } = this.platform;
 
     this.service = this.accessory.getService(HeaterCooler) || this.accessory.addService(HeaterCooler, device.name);
