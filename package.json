@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/shadman-a/homebridge-my-ac.git"
+    "url": "git+https://github.com/shadman-a/homebridge-my-ac.git"
   },
   "bugs": {
     "url": "https://github.com/shadman-a/homebridge-my-ac/issues"
@@ -27,7 +27,7 @@
     "homebridge-ui"
   ],
   "bin": {
-    "thinq": "./dist/cli.js"
+    "thinq": "dist/cli.js"
   },
   "scripts": {
     "build": "rimraf ./dist && tsc",
