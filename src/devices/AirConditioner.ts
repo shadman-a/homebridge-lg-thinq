@@ -57,6 +57,39 @@ export type Config = {
   ac_energy_save: boolean,
 }
 
+type ACModelProfile = {
+  modelAliases: string[],
+  defaults: Partial<Config>,
+  capabilities?: {
+    jetMode?: boolean,
+    quietMode?: boolean,
+    airClean?: boolean,
+    energySave?: boolean,
+  },
+}
+
+const LW1223ERSM_PROFILE: ACModelProfile = {
+  modelAliases: ['LW1223ERSM', 'LW1223ERSM.AT1AHD4'],
+  defaults: {
+    ac_mode: 'COOLING',
+    ac_temperature_sensor: true,
+    ac_led_control: true,
+    ac_fan_control: true,
+    ac_temperature_unit: 'F',
+    ac_energy_save: true,
+    ac_air_clean: false,
+    ac_air_quality: false,
+    ac_humidity_sensor: false,
+    ac_jet_control: false,
+  },
+  capabilities: {
+    jetMode: false,
+    quietMode: false,
+    airClean: false,
+    energySave: true,
+  },
+};
+
 export default class AirConditioner extends BaseDevice {
   protected service: Service;
   protected serviceAirQuality: Service | undefined;
@@ -209,6 +242,8 @@ export default class AirConditioner extends BaseDevice {
   }
 
   public get config(): Config {
+    const profileDefaults = this.getModelProfile(this.accessory.context.device)?.defaults ?? {};
+
     return {
       ac_swing_mode: 'BOTH',
       ac_air_quality: false,
@@ -222,6 +257,7 @@ export default class AirConditioner extends BaseDevice {
       ac_buttons: [],
       ac_air_clean: true,
       ac_energy_save: false,
+      ...profileDefaults,
       ...super.config,
     };
   }
@@ -242,19 +278,68 @@ export default class AirConditioner extends BaseDevice {
     }
   }
 
+  protected normalizeModelName(model: string | undefined) {
+    return (model || '').trim().toUpperCase();
+  }
+
+  protected matchesModel(device: Device, alias: string) {
+    const normalizedAlias = this.normalizeModelName(alias);
+    const candidates = [
+      this.normalizeModelName(device.model),
+      this.normalizeModelName(device.salesModel),
+      this.normalizeModelName(device.data.modelName),
+      this.normalizeModelName(device.data.manufacture?.manufactureModel),
+    ].filter(Boolean);
+
+    return candidates.some(candidate => (
+      candidate === normalizedAlias
+      || candidate.startsWith(normalizedAlias + '.')
+      || candidate.startsWith(normalizedAlias + '_')
+    ));
+  }
+
+  protected getModelProfile(device: Device): ACModelProfile | undefined {
+    const profiles = [LW1223ERSM_PROFILE];
+    return profiles.find(profile => profile.modelAliases.some(alias => this.matchesModel(device, alias)));
+  }
+
+  protected getProfileCapability(device: Device, capability: keyof NonNullable<ACModelProfile['capabilities']>) {
+    return this.getModelProfile(device)?.capabilities?.[capability];
+  }
+
   protected supportsJetMode(device: Device) {
+    const profileCapability = this.getProfileCapability(device, 'jetMode');
+    if (typeof profileCapability === 'boolean') {
+      return profileCapability;
+    }
+
     return this.jetModeModels.includes(device.model) || this.hasCapability(device, 'airState.wMode.jet');
   }
 
   protected supportsQuietMode(device: Device) {
+    const profileCapability = this.getProfileCapability(device, 'quietMode');
+    if (typeof profileCapability === 'boolean') {
+      return profileCapability;
+    }
+
     return this.quietModeModels.includes(device.model) || this.hasCapability(device, 'airState.miscFuncState.silentAWHP');
   }
 
   protected supportsAirClean(device: Device) {
+    const profileCapability = this.getProfileCapability(device, 'airClean');
+    if (typeof profileCapability === 'boolean') {
+      return profileCapability;
+    }
+
     return this.airCleanModels.includes(device.model) || this.hasCapability(device, 'airState.wMode.airClean');
   }
 
   protected isEnergySaveSupported(device: Device) {
+    const profileCapability = this.getProfileCapability(device, 'energySave');
+    if (typeof profileCapability === 'boolean') {
+      return profileCapability;
+    }
+
     return this.hasCapability(device, 'airState.powerSave.basic');
   }
 
