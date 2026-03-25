@@ -65,6 +65,8 @@ type ACModelProfile = {
     quietMode?: boolean,
     airClean?: boolean,
     energySave?: boolean,
+    filterMaintenance?: boolean,
+    sleepTimer?: boolean,
   },
 }
 
@@ -87,6 +89,8 @@ const LW1223ERSM_PROFILE: ACModelProfile = {
     quietMode: false,
     airClean: false,
     energySave: true,
+    filterMaintenance: true,
+    sleepTimer: true,
   },
 };
 
@@ -101,7 +105,10 @@ export default class AirConditioner extends BaseDevice {
   protected serviceQuietMode: Service | undefined;
   protected serviceEnergySaveMode: Service | undefined;
   protected serviceAirClean: Service | undefined;
+  protected serviceFilterMaintenance: Service | undefined;
+  protected serviceSleepTimer: Service | undefined;
   protected serviceLabelButtons: Service | undefined;
+  protected sleepTimerSetDuration = 3600;
 
   protected jetModeModels = ['RAC_056905'];
   protected quietModeModels = ['WINF_056905'];
@@ -123,6 +130,8 @@ export default class AirConditioner extends BaseDevice {
         Switch,
         Lightbulb,
         HeaterCooler,
+        FilterMaintenance,
+        Valve,
       },
     } = this.platform;
 
@@ -227,6 +236,62 @@ export default class AirConditioner extends BaseDevice {
       this.serviceAirClean = undefined;
     }
 
+    this.serviceFilterMaintenance = accessory.getService(FilterMaintenance) || undefined;
+    if (this.supportsFilterMaintenance(device)) {
+      if (!this.serviceFilterMaintenance) {
+        this.serviceFilterMaintenance = accessory.addService(FilterMaintenance, 'Filter Maintenance', 'Filter Maintenance');
+      }
+      this.serviceFilterMaintenance.addOptionalCharacteristic(platform.Characteristic.ConfiguredName);
+      this.serviceFilterMaintenance.setCharacteristic(platform.Characteristic.ConfiguredName, device.name + ' Filter');
+      this.serviceFilterMaintenance.updateCharacteristic(platform.Characteristic.Name, 'Filter Maintenance');
+      this.service.addLinkedService(this.serviceFilterMaintenance);
+    } else if (this.serviceFilterMaintenance) {
+      accessory.removeService(this.serviceFilterMaintenance);
+      this.serviceFilterMaintenance = undefined;
+    }
+
+    this.serviceSleepTimer = accessory.getService('Sleep Timer') || undefined;
+    if (this.supportsSleepTimer(device)) {
+      if (!this.serviceSleepTimer) {
+        this.serviceSleepTimer = accessory.addService(Valve, 'Sleep Timer', 'Sleep Timer');
+      }
+      this.serviceSleepTimer.addOptionalCharacteristic(platform.Characteristic.ConfiguredName);
+      this.serviceSleepTimer.setCharacteristic(platform.Characteristic.ConfiguredName, device.name + ' Sleep Timer');
+      this.serviceSleepTimer.setCharacteristic(platform.Characteristic.Name, 'Sleep Timer');
+      this.serviceSleepTimer.setCharacteristic(platform.Characteristic.ValveType, platform.Characteristic.ValveType.GENERIC_VALVE);
+      this.serviceSleepTimer.getCharacteristic(platform.Characteristic.Active)
+        .onGet(() => {
+          return this.Status.sleepTimeSeconds > 0
+            ? platform.Characteristic.Active.ACTIVE
+            : platform.Characteristic.Active.INACTIVE;
+        })
+        .onSet(this.setSleepTimerActive.bind(this));
+      this.serviceSleepTimer.getCharacteristic(platform.Characteristic.RemainingDuration)
+        .setProps({
+          maxValue: this.getSleepTimerMaxSeconds(device),
+          minStep: 60,
+        })
+        .onGet(() => {
+          return this.Status.sleepTimeSeconds;
+        });
+      this.serviceSleepTimer.getCharacteristic(platform.Characteristic.SetDuration)
+        .setProps({
+          maxValue: this.getSleepTimerMaxSeconds(device),
+          minStep: 60,
+        })
+        .onGet(() => {
+          return this.Status.sleepTimeSeconds || this.sleepTimerSetDuration;
+        })
+        .onSet(this.setSleepTimerDuration.bind(this));
+      this.service.addLinkedService(this.serviceSleepTimer);
+      if (this.Status.sleepTimeSeconds > 0) {
+        this.sleepTimerSetDuration = this.Status.sleepTimeSeconds;
+      }
+    } else if (this.serviceSleepTimer) {
+      accessory.removeService(this.serviceSleepTimer);
+      this.serviceSleepTimer = undefined;
+    }
+
     this.setupButton(device);
 
     setInterval(() => {
@@ -305,6 +370,40 @@ export default class AirConditioner extends BaseDevice {
 
   protected getProfileCapability(device: Device, capability: keyof NonNullable<ACModelProfile['capabilities']>) {
     return this.getModelProfile(device)?.capabilities?.[capability];
+  }
+
+  protected getSleepTimerMaxSeconds(device: Device) {
+    const range = device.deviceModel.value('airState.reservation.sleepTime') as RangeValue | null;
+    return Math.max(60, Number(range?.max || 420) * 60);
+  }
+
+  protected normalizeSleepTimerSeconds(seconds: number, device: Device, allowZero = false) {
+    const maxSeconds = this.getSleepTimerMaxSeconds(device);
+    if (seconds <= 0) {
+      return allowZero ? 0 : 60;
+    }
+
+    const roundedSeconds = Math.round(seconds / 60) * 60;
+    return Math.min(maxSeconds, Math.max(60, roundedSeconds));
+  }
+
+  protected supportsFilterMaintenance(device: Device) {
+    const profileCapability = this.getProfileCapability(device, 'filterMaintenance');
+    if (typeof profileCapability === 'boolean') {
+      return profileCapability;
+    }
+
+    return this.hasCapability(device, 'airState.filterMngStates.maxTime')
+      || this.hasCapability(device, 'airState.filterMngState.maxTime');
+  }
+
+  protected supportsSleepTimer(device: Device) {
+    const profileCapability = this.getProfileCapability(device, 'sleepTimer');
+    if (typeof profileCapability === 'boolean') {
+      return profileCapability;
+    }
+
+    return this.hasCapability(device, 'airState.reservation.sleepTime');
   }
 
   protected supportsJetMode(device: Device) {
@@ -634,6 +733,73 @@ export default class AirConditioner extends BaseDevice {
     }
   }
 
+  protected async applySleepTimer(device: Device, durationSeconds: number) {
+    const durationMinutes = durationSeconds > 0 ? Math.round(durationSeconds / 60) : 0;
+    const success = await this.platform.ThinQ?.deviceControl(device.id, {
+      dataSetList: {
+        'airState.reservation.sleepTime': durationMinutes,
+      },
+    }, 'Set', 'reservationCtrl');
+
+    if (success === false) {
+      return false;
+    }
+
+    this.accessory.context.device.data.snapshot['airState.reservation.sleepTime'] = durationMinutes;
+    if (durationSeconds > 0) {
+      this.sleepTimerSetDuration = durationSeconds;
+    }
+    this.updateAccessoryCharacteristic(this.accessory.context.device);
+    return true;
+  }
+
+  async setSleepTimerActive(value: CharacteristicValue) {
+    const device: Device = this.accessory.context.device;
+    const enabled = normalizeBoolean(value);
+    const durationSeconds = enabled
+      ? this.normalizeSleepTimerSeconds(this.Status.sleepTimeSeconds || this.sleepTimerSetDuration || 3600, device)
+      : 0;
+
+    if (enabled && !this.Status.isPowerOn) {
+      this.logger.debug('Power is off, cannot enable sleep timer');
+      this.updateAccessorySleepTimerCharacteristic();
+      return;
+    }
+
+    try {
+      await this.applySleepTimer(device, durationSeconds);
+    } catch (error) {
+      this.logger.error('Error setting sleep timer state:', error);
+    }
+  }
+
+  async setSleepTimerDuration(value: CharacteristicValue) {
+    const device: Device = this.accessory.context.device;
+    const vNum = normalizeNumber(value);
+    if (vNum === null) {
+      return;
+    }
+
+    const durationSeconds = this.normalizeSleepTimerSeconds(vNum, device);
+    this.sleepTimerSetDuration = durationSeconds;
+
+    if (this.Status.sleepTimeSeconds <= 0) {
+      this.updateAccessorySleepTimerCharacteristic();
+      return;
+    }
+
+    if (!this.Status.isPowerOn) {
+      this.logger.debug('Power is off, cannot change sleep timer');
+      return;
+    }
+
+    try {
+      await this.applySleepTimer(device, durationSeconds);
+    } catch (error) {
+      this.logger.error('Error setting sleep timer duration:', error);
+    }
+  }
+
   public updateAccessoryCharacteristic(device: Device) {
     super.updateAccessoryCharacteristic(device);
     this.updateAccessoryActiveCharacteristic();
@@ -651,6 +817,8 @@ export default class AirConditioner extends BaseDevice {
     this.updateAccessoryQuietModeCharacteristic();
     this.updateAccessoryEnergySaveModeCharacteristic();
     this.updateAccessoryAirCleanCharacteristic();
+    this.updateAccessoryFilterMaintenanceCharacteristic();
+    this.updateAccessorySleepTimerCharacteristic();
   }
 
   public updateAccessoryActiveCharacteristic() {
@@ -858,6 +1026,47 @@ export default class AirConditioner extends BaseDevice {
     if (this.serviceAirClean && this.supportsAirClean(device) && this.config.ac_air_clean) {
       this.serviceAirClean.updateCharacteristic(this.platform.Characteristic.On, !!device.snapshot['airState.wMode.airClean']);
     }
+  }
+
+  public updateAccessoryFilterMaintenanceCharacteristic() {
+    const { Characteristic } = this.platform;
+    const device = this.accessory.context.device;
+    if (!this.serviceFilterMaintenance || !this.supportsFilterMaintenance(device)) {
+      return;
+    }
+
+    const filterLifeLevel = this.Status.filterLifeLevel;
+    this.serviceFilterMaintenance.updateCharacteristic(Characteristic.FilterLifeLevel, filterLifeLevel);
+    this.serviceFilterMaintenance.updateCharacteristic(
+      Characteristic.FilterChangeIndication,
+      filterLifeLevel <= 5
+        ? Characteristic.FilterChangeIndication.CHANGE_FILTER
+        : Characteristic.FilterChangeIndication.FILTER_OK,
+    );
+  }
+
+  public updateAccessorySleepTimerCharacteristic() {
+    const { Characteristic } = this.platform;
+    const device = this.accessory.context.device;
+    if (!this.serviceSleepTimer || !this.supportsSleepTimer(device)) {
+      return;
+    }
+
+    const remainingDuration = this.Status.sleepTimeSeconds;
+    if (remainingDuration > 0) {
+      this.sleepTimerSetDuration = remainingDuration;
+    }
+
+    this.serviceSleepTimer.updateCharacteristic(
+      Characteristic.Active,
+      remainingDuration > 0 ? Characteristic.Active.ACTIVE : Characteristic.Active.INACTIVE,
+    );
+    this.serviceSleepTimer.updateCharacteristic(
+      Characteristic.InUse,
+      remainingDuration > 0 ? Characteristic.InUse.IN_USE : Characteristic.InUse.NOT_IN_USE,
+    );
+    this.serviceSleepTimer.updateCharacteristic(Characteristic.RemainingDuration, remainingDuration);
+    this.serviceSleepTimer.updateCharacteristic(Characteristic.SetDuration, remainingDuration || this.sleepTimerSetDuration);
   }
 
   async setLight(value: CharacteristicValue) {
@@ -1321,6 +1530,14 @@ export class ACStatus {
     return !!this.data['airState.powerSave.basic'];
   }
 
+  public get sleepTimeMinutes() {
+    return Number(this.data['airState.reservation.sleepTime'] || 0);
+  }
+
+  public get sleepTimeSeconds() {
+    return this.sleepTimeMinutes > 0 ? this.sleepTimeMinutes * 60 : 0;
+  }
+
   public get currentConsumption() {
     const consumption = Number(this.data['airState.energy.onCurrent']);
     if (isNaN(consumption)) {
@@ -1331,6 +1548,31 @@ export class ACStatus {
 
   public get type() {
     return this.device.deviceModel.data.Info.modelType || ACModelType.RAC;
+  }
+
+  public get filterMaxTime() {
+    return Number(
+      this.data['airState.filterMngStates.maxTime']
+      ?? this.data['airState.filterMngState.maxTime']
+      ?? 0,
+    );
+  }
+
+  public get filterUseTime() {
+    return Number(
+      this.data['airState.filterMngStates.useTime']
+      ?? this.data['airState.filterMngState.useTime']
+      ?? 0,
+    );
+  }
+
+  public get filterLifeLevel() {
+    if (this.filterMaxTime <= 0) {
+      return 100;
+    }
+
+    const remainingRatio = 1 - (this.filterUseTime / this.filterMaxTime);
+    return Math.max(0, Math.min(100, Math.round(remainingRatio * 100)));
   }
 
   public getTemperatureRange([minRange, maxRange]: [EnumValue, EnumValue]): RangeValue {
