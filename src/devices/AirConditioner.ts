@@ -94,7 +94,6 @@ export default class AirConditioner extends BaseDevice {
     } = this.platform;
 
     this.service = this.accessory.getService(HeaterCooler) || this.accessory.addService(HeaterCooler, device.name);
-    this.removeLegacyServices();
     this.service.addOptionalCharacteristic(this.platform.customCharacteristics.TotalConsumption);
     this.service.addOptionalCharacteristic(this.platform.customCharacteristics.ACMode);
     this.createHeaterCoolerService();
@@ -240,18 +239,6 @@ export default class AirConditioner extends BaseDevice {
       return device.deviceModel.value(key) !== null;
     } catch {
       return false;
-    }
-  }
-
-  protected removeLegacyServices() {
-    const legacyServices = [
-      this.accessory.getService('Sleep Timer'),
-      this.accessory.getService('Filter Maintenance'),
-    ].filter((service): service is Service => service !== undefined);
-
-    for (const service of legacyServices) {
-      this.logger.debug(`Removing legacy AC service: ${service.displayName}`);
-      this.accessory.removeService(service);
     }
   }
 
