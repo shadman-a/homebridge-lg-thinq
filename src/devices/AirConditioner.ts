@@ -230,32 +230,20 @@ export default class AirConditioner extends BaseDevice {
     return new ACStatus(this.accessory.context.device.snapshot, this.accessory.context.device, this.config, this.logger);
   }
 
-  protected hasCapability(device: Device, key: string) {
-    if (Object.prototype.hasOwnProperty.call(device.snapshot, key)) {
-      return true;
-    }
-
-    try {
-      return device.deviceModel.value(key) !== null;
-    } catch {
-      return false;
-    }
-  }
-
   protected supportsJetMode(device: Device) {
-    return this.jetModeModels.includes(device.model) || this.hasCapability(device, 'airState.wMode.jet');
+    return this.jetModeModels.includes(device.model);
   }
 
   protected supportsQuietMode(device: Device) {
-    return this.quietModeModels.includes(device.model) || this.hasCapability(device, 'airState.miscFuncState.silentAWHP');
+    return this.quietModeModels.includes(device.model);
   }
 
   protected supportsAirClean(device: Device) {
-    return this.airCleanModels.includes(device.model) || this.hasCapability(device, 'airState.wMode.airClean');
+    return this.airCleanModels.includes(device.model);
   }
 
   protected isEnergySaveSupported(device: Device) {
-    return this.hasCapability(device, 'airState.powerSave.basic');
+    return Object.prototype.hasOwnProperty.call(device.snapshot, 'airState.powerSave.basic');
   }
 
   protected createFanService() {
@@ -347,28 +335,14 @@ export default class AirConditioner extends BaseDevice {
     this.service.getCharacteristic(Characteristic.CurrentHeaterCoolerState)
       .updateValue(Characteristic.CurrentHeaterCoolerState.INACTIVE);
 
-    if (this.config.ac_mode === 'BOTH') {
-      this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
-        .setProps({
-          validValues: [
-            Characteristic.TargetHeaterCoolerState.HEAT,
-            Characteristic.TargetHeaterCoolerState.COOL,
-          ],
-        })
-        .updateValue(Characteristic.TargetHeaterCoolerState.COOL);
-    } else if (this.config.ac_mode === 'HEATING') {
-      this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
-        .setProps({
-          validValues: [Characteristic.TargetHeaterCoolerState.HEAT],
-        })
-        .updateValue(Characteristic.TargetHeaterCoolerState.HEAT);
-    } else {
-      this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
-        .setProps({
-          validValues: [Characteristic.TargetHeaterCoolerState.COOL],
-        })
-        .updateValue(Characteristic.TargetHeaterCoolerState.COOL);
-    }
+    this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
+      .setProps({
+        validValues: [
+          Characteristic.TargetHeaterCoolerState.HEAT,
+          Characteristic.TargetHeaterCoolerState.COOL,
+        ],
+      })
+      .updateValue(Characteristic.TargetHeaterCoolerState.COOL);
 
     this.service.getCharacteristic(Characteristic.TargetHeaterCoolerState)
       .onSet(this.setTargetState.bind(this));
@@ -811,29 +785,17 @@ export default class AirConditioner extends BaseDevice {
 
     this.currentTargetState = targetValue;
 
-    let opMode = this.Status.opMode;
-    switch (targetValue) {
-    case TargetHeaterCoolerState.HEAT:
-      opMode = OpMode.FAN;
-      break;
-    case TargetHeaterCoolerState.COOL:
-      opMode = OpMode.COOL;
-      break;
-    default:
-      return;
-    }
-
-    if (opMode === this.Status.opMode) {
-      return;
-    }
-
     try {
-      const success = await this.setOpMode(this.accessory.context.device.id, opMode);
-      if (success === false) {
+      switch (targetValue) {
+      case TargetHeaterCoolerState.HEAT:
+        await this.setACMode(ACModeOption.FAN);
+        break;
+      case TargetHeaterCoolerState.COOL:
+        await this.setACMode(ACModeOption.COOL);
+        break;
+      default:
         return;
       }
-      this.accessory.context.device.data.snapshot['airState.opMode'] = opMode;
-      this.updateAccessoryCharacteristic(this.accessory.context.device);
     } catch (error) {
       this.logger.error('Error setting target state:', error);
     }
