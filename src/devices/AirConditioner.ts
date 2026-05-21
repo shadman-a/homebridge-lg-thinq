@@ -74,6 +74,8 @@ export default class AirConditioner extends BaseDevice {
   protected quietModeModels = ['WINF_056905'];
   protected airCleanModels = ['RAC_056905'];
   protected currentTargetState = 2;
+  protected pendingPowerState: number | undefined;
+  protected pendingPowerStateUntil = 0;
 
   constructor(
     public readonly platform: LGThinQHomebridgePlatform,
@@ -542,6 +544,25 @@ export default class AirConditioner extends BaseDevice {
     this.updateAccessoryAirCleanCharacteristic();
   }
 
+  public update(snapshot: any) {
+    if (this.pendingPowerState !== undefined && Object.prototype.hasOwnProperty.call(snapshot, 'airState.operation')) {
+      const now = Date.now();
+      const incomingPowerState = Number(snapshot['airState.operation']);
+
+      if (incomingPowerState === this.pendingPowerState || now > this.pendingPowerStateUntil) {
+        this.pendingPowerState = undefined;
+      } else {
+        this.logger.debug('Ignoring stale AC power state while waiting for ThinQ to catch up:', incomingPowerState);
+        snapshot = {
+          ...snapshot,
+          'airState.operation': this.pendingPowerState,
+        };
+      }
+    }
+
+    super.update(snapshot);
+  }
+
   public updateAccessoryActiveCharacteristic() {
     this.service.updateCharacteristic(
       this.platform.Characteristic.Active,
@@ -812,16 +833,25 @@ export default class AirConditioner extends BaseDevice {
       return;
     }
 
+    this.pendingPowerState = isOnNumeric;
+    this.pendingPowerStateUntil = Date.now() + 10000;
+    this.accessory.context.device.data.snapshot['airState.operation'] = isOnNumeric;
+    this.updateAccessoryCharacteristic(this.accessory.context.device);
+
     try {
       const success = await this.platform.ThinQ?.deviceControl(device.id, {
         dataKey: 'airState.operation',
         dataValue: isOnNumeric,
       }, 'Operation');
-      if (success) {
-        this.accessory.context.device.data.snapshot['airState.operation'] = isOnNumeric;
+      if (success === false) {
+        this.pendingPowerState = undefined;
+        this.accessory.context.device.data.snapshot['airState.operation'] = isOn ? 0 : 1;
         this.updateAccessoryCharacteristic(this.accessory.context.device);
       }
     } catch (error) {
+      this.pendingPowerState = undefined;
+      this.accessory.context.device.data.snapshot['airState.operation'] = isOn ? 0 : 1;
+      this.updateAccessoryCharacteristic(this.accessory.context.device);
       this.logger.error('Error setting active state:', error);
     }
   }
